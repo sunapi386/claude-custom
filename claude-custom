@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# claude-custom — launch `claude` against a custom Anthropic-compatible endpoint.
+# Interactively pick a saved profile or create a new one, then exec claude.
+#
+# Profiles live in $XDG_CONFIG_HOME/claude-custom/profiles/<name>.env
+# Each profile is a shell-sourceable file with:
+#   BASE_URL=...
+#   AUTH_TOKEN=...
+#   MODEL=...
+#   SMALL_FAST_MODEL=...   # optional, defaults to MODEL
+
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-custom"
+PROFILE_DIR="$CONFIG_DIR/profiles"
+mkdir -p "$PROFILE_DIR"
+chmod 700 "$CONFIG_DIR" "$PROFILE_DIR"
+
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[36m%s\033[0m\n' "$*"; }
+ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
+
+prompt() {
+  local var="$1" msg="$2" default="${3:-}" secret="${4:-}" val
+  if [[ -n "$default" ]]; then msg="$msg [$default]"; fi
+  if [[ "$secret" == "secret" ]]; then
+    read -r -s -p "$msg: " val; echo
+  else
+    read -r -p "$msg: " val
+  fi
+  [[ -z "$val" && -n "$default" ]] && val="$default"
+  printf -v "$var" '%s' "$val"
+}
+
+list_profiles() {
+  find "$PROFILE_DIR" -maxdepth 1 -type f -name '*.env' -printf '%f\n' 2>/dev/null \
+    | sed 's/\.env$//' | sort
+}
+
+save_profile() {
+  local name="$1" base="$2" token="$3" model="$4" small="$5"
+  local file="$PROFILE_DIR/$name.env"
+  umask 077
+  cat > "$file" <<EOF
+BASE_URL=$base
+AUTH_TOKEN=$token
+MODEL=$model
+SMALL_FAST_MODEL=$small
+EOF
+  chmod 600 "$file"
+  ok "saved profile → $file"
+}
+
+load_profile() {
+  local name="$1" file="$PROFILE_DIR/$1.env"
+  [[ -f "$file" ]] || die "no such profile: $name"
+  # shellcheck disable=SC1090
+  set -a; . "$file"; set +a
+  : "${SMALL_FAST_MODEL:=$MODEL}"
+}
+
+create_profile_interactive() {
+  local name base token model small
+  prompt name  "profile name (e.g. zai)"
+  [[ -z "$name" ]] && die "name required"
+  [[ -f "$PROFILE_DIR/$name.env" ]] && {
+    read -r -p "profile '$name' exists. overwrite? [y/N] " yn
+    [[ "$yn" == [yY]* ]] || die "aborted"
+  }
+  prompt base  "endpoint / ANTHROPIC_BASE_URL" "https://api.z.ai/api/anthropic"
+  prompt token "api key / ANTHROPIC_AUTH_TOKEN" "" secret
+  [[ -z "$token" ]] && die "token required"
+  prompt model "model" "glm-4.6"
+  prompt small "small/fast model" "$model"
+  save_profile "$name" "$base" "$token" "$model" "$small"
+  load_profile "$name"
+}
+
+pick_profile_interactive() {
+  local profiles=()
+  while IFS= read -r line; do profiles+=("$line"); done < <(list_profiles)
+
+  echo
+  info "claude-custom — pick a profile"
+  local i=1
+  for p in "${profiles[@]}"; do
+    local f="$PROFILE_DIR/$p.env"
+    local m; m=$(sed -n 's/^MODEL=//p' "$f" 2>/dev/null)
+    local b; b=$(sed -n 's/^BASE_URL=//p' "$f" 2>/dev/null)
+    printf "  %2d) %-20s  %s  (%s)\n" "$i" "$p" "$m" "$b"
+    ((i++))
+  done
+  printf "  %2d) [new profile]\n" "$i"
+  printf "  %2d) [delete profile]\n" "$((i+1))"
+  echo
+  local choice
+  read -r -p "choice: " choice
+  [[ "$choice" =~ ^[0-9]+$ ]] || die "invalid choice"
+
+  if (( choice == i )); then
+    create_profile_interactive
+  elif (( choice == i+1 )); then
+    read -r -p "name to delete: " dname
+    rm -f -- "$PROFILE_DIR/$dname.env" && ok "deleted $dname"
+    exit 0
+  elif (( choice >= 1 && choice < i )); then
+    load_profile "${profiles[$((choice-1))]}"
+  else
+    die "invalid choice"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+usage:
+  claude-custom                      # interactive: pick or create profile, launch claude
+  claude-custom <profile> [args...]  # launch with named profile (args passed to claude)
+  claude-custom --list               # list profiles
+  claude-custom --new                # create a new profile (no launch)
+  claude-custom --delete <name>      # delete a profile
+  claude-custom --show <name>        # print a profile (token masked)
+  claude-custom --help
+EOF
+}
+
+main() {
+  case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    --list)
+      list_profiles | sed 's/^/  /'; exit 0 ;;
+    --new)
+      create_profile_interactive; exit 0 ;;
+    --delete)
+      [[ -n "${2:-}" ]] || die "name required"
+      rm -f -- "$PROFILE_DIR/$2.env" && ok "deleted $2"; exit 0 ;;
+    --show)
+      [[ -n "${2:-}" ]] || die "name required"
+      local f="$PROFILE_DIR/$2.env"
+      [[ -f "$f" ]] || die "no such profile"
+      sed -E 's/^(AUTH_TOKEN)=.*/\1=***masked***/' "$f"; exit 0 ;;
+    "")
+      if [[ -z "$(list_profiles)" ]]; then
+        info "no profiles yet — let's create one"
+        create_profile_interactive
+      else
+        pick_profile_interactive
+      fi
+      ;;
+    -*) die "unknown flag: $1" ;;
+    *)
+      load_profile "$1"; shift ;;
+  esac
+
+  export ANTHROPIC_BASE_URL="$BASE_URL"
+  export ANTHROPIC_AUTH_TOKEN="$AUTH_TOKEN"
+  export ANTHROPIC_MODEL="$MODEL"
+  export ANTHROPIC_SMALL_FAST_MODEL="$SMALL_FAST_MODEL"
+  # Some forks read these instead:
+  export ANTHROPIC_API_KEY="$AUTH_TOKEN"
+
+  ok "→ $ANTHROPIC_BASE_URL  model=$ANTHROPIC_MODEL"
+  command -v claude >/dev/null || die "claude CLI not found on PATH"
+  exec claude "$@"
+}
+
+main "$@"
