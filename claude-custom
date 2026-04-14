@@ -6,8 +6,11 @@
 # Each profile is a shell-sourceable file with:
 #   BASE_URL=...
 #   AUTH_TOKEN=...
-#   MODEL=...
-#   SMALL_FAST_MODEL=...   # optional, defaults to MODEL
+#   MODELS=model-a,model-b,...        # comma-separated list of models
+#   DEFAULT_MODEL=model-a              # one of the entries in MODELS
+#   SMALL_FAST_MODEL=...               # optional, defaults to DEFAULT_MODEL
+#
+# Legacy single-model profiles using MODEL=... are still supported.
 
 set -euo pipefail
 
@@ -37,14 +40,25 @@ list_profiles() {
     | sed 's/\.env$//' | sort
 }
 
+split_models() {
+  # echoes one model per line from a comma-separated list, trimming whitespace
+  local IFS=','
+  local m
+  for m in $1; do
+    m="${m#"${m%%[![:space:]]*}"}"; m="${m%"${m##*[![:space:]]}"}"
+    [[ -n "$m" ]] && printf '%s\n' "$m"
+  done
+}
+
 save_profile() {
-  local name="$1" base="$2" token="$3" model="$4" small="$5"
+  local name="$1" base="$2" token="$3" models="$4" default_model="$5" small="$6"
   local file="$PROFILE_DIR/$name.env"
   umask 077
   cat > "$file" <<EOF
 BASE_URL=$base
 AUTH_TOKEN=$token
-MODEL=$model
+MODELS=$models
+DEFAULT_MODEL=$default_model
 SMALL_FAST_MODEL=$small
 EOF
   chmod 600 "$file"
@@ -54,25 +68,81 @@ EOF
 load_profile() {
   local name="$1" file="$PROFILE_DIR/$1.env"
   [[ -f "$file" ]] || die "no such profile: $name"
+  unset BASE_URL AUTH_TOKEN MODELS DEFAULT_MODEL MODEL SMALL_FAST_MODEL
   # shellcheck disable=SC1090
   set -a; . "$file"; set +a
-  : "${SMALL_FAST_MODEL:=$MODEL}"
+  # backwards compat: legacy MODEL= profiles
+  if [[ -z "${MODELS:-}" && -n "${MODEL:-}" ]]; then
+    MODELS="$MODEL"
+    DEFAULT_MODEL="$MODEL"
+  fi
+  : "${DEFAULT_MODEL:=${MODELS%%,*}}"
+  : "${SMALL_FAST_MODEL:=$DEFAULT_MODEL}"
+}
+
+# Resolve which model to launch with given an already-loaded profile.
+# Argument: optional explicit model (e.g. from CLI). If empty and profile
+# has multiple models, prompts. If only one model, uses it silently.
+resolve_model() {
+  local explicit="${1:-}"
+  local models=()
+  while IFS= read -r m; do models+=("$m"); done < <(split_models "$MODELS")
+
+  (( ${#models[@]} >= 1 )) || die "profile has no models"
+
+  if [[ -n "$explicit" ]]; then
+    local found=""
+    for m in "${models[@]}"; do [[ "$m" == "$explicit" ]] && found="$m"; done
+    if [[ -z "$found" ]]; then
+      info "note: '$explicit' not in profile model list, using it anyway"
+      found="$explicit"
+    fi
+    SELECTED_MODEL="$found"
+    return
+  fi
+
+  if (( ${#models[@]} == 1 )); then
+    SELECTED_MODEL="${models[0]}"
+    return
+  fi
+
+  echo
+  info "pick a model"
+  local i=1
+  for m in "${models[@]}"; do
+    local marker=" "
+    [[ "$m" == "$DEFAULT_MODEL" ]] && marker="*"
+    printf "  %2d)%s %s\n" "$i" "$marker" "$m"
+    ((i++))
+  done
+  echo
+  local choice
+  read -r -p "choice [default: $DEFAULT_MODEL]: " choice
+  if [[ -z "$choice" ]]; then
+    SELECTED_MODEL="$DEFAULT_MODEL"
+  elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#models[@]} )); then
+    SELECTED_MODEL="${models[$((choice-1))]}"
+  else
+    die "invalid choice"
+  fi
 }
 
 create_profile_interactive() {
-  local name base token model small
+  local name base token models default_model small
   prompt name  "profile name (e.g. zai)"
   [[ -z "$name" ]] && die "name required"
   [[ -f "$PROFILE_DIR/$name.env" ]] && {
     read -r -p "profile '$name' exists. overwrite? [y/N] " yn
     [[ "$yn" == [yY]* ]] || die "aborted"
   }
-  prompt base  "endpoint / ANTHROPIC_BASE_URL" "https://api.z.ai/api/anthropic"
-  prompt token "api key / ANTHROPIC_AUTH_TOKEN" "" secret
+  prompt base   "endpoint / ANTHROPIC_BASE_URL" "https://api.z.ai/api/anthropic"
+  prompt token  "api key / ANTHROPIC_AUTH_TOKEN" "" secret
   [[ -z "$token" ]] && die "token required"
-  prompt model "model" "glm-4.6"
-  prompt small "small/fast model" "$model"
-  save_profile "$name" "$base" "$token" "$model" "$small"
+  prompt models "models (comma-separated)" "glm-4.6"
+  local first; first=$(split_models "$models" | head -1)
+  prompt default_model "default model" "$first"
+  prompt small  "small/fast model" "$default_model"
+  save_profile "$name" "$base" "$token" "$models" "$default_model" "$small"
   load_profile "$name"
 }
 
@@ -85,9 +155,9 @@ pick_profile_interactive() {
   local i=1
   for p in "${profiles[@]}"; do
     local f="$PROFILE_DIR/$p.env"
-    local m; m=$(sed -n 's/^MODEL=//p' "$f" 2>/dev/null)
-    local b; b=$(sed -n 's/^BASE_URL=//p' "$f" 2>/dev/null)
-    printf "  %2d) %-20s  %s  (%s)\n" "$i" "$p" "$m" "$b"
+    local ms; ms=$(sed -n 's/^MODELS=//p;s/^MODEL=//p' "$f" 2>/dev/null | head -1)
+    local b;  b=$(sed -n 's/^BASE_URL=//p' "$f" 2>/dev/null)
+    printf "  %2d) %-20s  [%s]  %s\n" "$i" "$p" "$ms" "$b"
     ((i++))
   done
   printf "  %2d) [new profile]\n" "$i"
@@ -113,17 +183,21 @@ pick_profile_interactive() {
 usage() {
   cat <<'EOF'
 usage:
-  claude-custom                      # interactive: pick or create profile, launch claude
-  claude-custom <profile> [args...]  # launch with named profile (args passed to claude)
-  claude-custom --list               # list profiles
-  claude-custom --new                # create a new profile (no launch)
-  claude-custom --delete <name>      # delete a profile
-  claude-custom --show <name>        # print a profile (token masked)
+  claude-custom                                # interactive: pick profile + model, launch
+  claude-custom <profile> [args...]            # launch with named profile
+  claude-custom <profile> --model <m> [args]   # launch with explicit model
+  claude-custom --list                         # list profiles
+  claude-custom --new                          # create a new profile (no launch)
+  claude-custom --delete <name>                # delete a profile
+  claude-custom --show <name>                  # print a profile (token masked)
   claude-custom --help
+
+profile model list: comma-separated, picker shown at launch when >1 model.
 EOF
 }
 
 main() {
+  local explicit_model=""
   case "${1:-}" in
     --help|-h) usage; exit 0 ;;
     --list)
@@ -148,15 +222,24 @@ main() {
       ;;
     -*) die "unknown flag: $1" ;;
     *)
-      load_profile "$1"; shift ;;
+      load_profile "$1"; shift
+      # parse optional --model <m> after profile name
+      if [[ "${1:-}" == "--model" ]]; then
+        [[ -n "${2:-}" ]] || die "--model requires a value"
+        explicit_model="$2"; shift 2
+      fi
+      ;;
   esac
 
+  resolve_model "$explicit_model"
+
+  # Real Claude Code complains if both AUTH_TOKEN and API_KEY are set.
+  # AUTH_TOKEN is the right choice for custom Anthropic-compatible endpoints.
+  unset ANTHROPIC_API_KEY
   export ANTHROPIC_BASE_URL="$BASE_URL"
   export ANTHROPIC_AUTH_TOKEN="$AUTH_TOKEN"
-  export ANTHROPIC_MODEL="$MODEL"
+  export ANTHROPIC_MODEL="$SELECTED_MODEL"
   export ANTHROPIC_SMALL_FAST_MODEL="$SMALL_FAST_MODEL"
-  # Some forks read these instead:
-  export ANTHROPIC_API_KEY="$AUTH_TOKEN"
 
   ok "→ $ANTHROPIC_BASE_URL  model=$ANTHROPIC_MODEL"
   command -v claude >/dev/null || die "claude CLI not found on PATH"

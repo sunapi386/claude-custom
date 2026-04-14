@@ -31,40 +31,50 @@ Make sure `~/.local/bin` is on your `PATH`, and that `claude` itself is installe
 
 ### First run — create a profile
 
+A profile bundles **one endpoint + one API key + a list of models** the provider exposes. You pick a default; the rest are still available at launch time.
+
 ```sh
 $ claude-custom
 no profiles yet — let's create one
 profile name (e.g. zai): zai
 endpoint / ANTHROPIC_BASE_URL [https://api.z.ai/api/anthropic]:
 api key / ANTHROPIC_AUTH_TOKEN: ********
-model [glm-4.6]:
+models (comma-separated) [glm-4.6]: glm-4.6, glm-4.5, glm-4.6-air
+default model [glm-4.6]:
 small/fast model [glm-4.6]:
 saved profile → ~/.config/claude-custom/profiles/zai.env
-→ https://api.z.ai/api/anthropic  model=glm-4.6
 ```
 
-Then `claude` launches with those env vars set.
+### Pick a saved profile (and a model)
 
-### Pick a saved profile
+If a profile has more than one model, you'll get a second picker. The `*` marks the profile's default — hit enter to accept it, or pick another by number.
 
 ```sh
 $ claude-custom
 
 claude-custom — pick a profile
-   1) zai                   glm-4.6  (https://api.z.ai/api/anthropic)
-   2) anthropic             claude-sonnet-4-6  (https://api.anthropic.com)
-   3) lab-gateway           glm-4.6  (https://gateway.lab.internal/anthropic)
-   4) [new profile]
-   5) [delete profile]
+   1) zai           [glm-4.6,glm-4.5,glm-4.6-air]    https://api.z.ai/api/anthropic
+   2) anthropic     [claude-sonnet-4-6,claude-opus-4-6]  https://api.anthropic.com
+   3) [new profile]
+   4) [delete profile]
 
 choice: 1
+
+pick a model
+   1)* glm-4.6
+   2)  glm-4.5
+   3)  glm-4.6-air
+
+choice [default: glm-4.6]: 2
+→ https://api.z.ai/api/anthropic  model=glm-4.5
 ```
 
-### Non-interactive — pass profile name directly
+### Non-interactive — pass profile (and optionally model) directly
 
 ```sh
-claude-custom zai
-claude-custom zai "review this diff"   # extra args forwarded to claude
+claude-custom zai                          # uses default model (or prompts if >1 + no choice)
+claude-custom zai --model glm-4.5          # explicit model from the profile's list
+claude-custom zai --model glm-4.5 "go"     # extra args forwarded to claude
 ```
 
 ### Manage profiles
@@ -91,19 +101,20 @@ Example `zai.env`:
 ```sh
 BASE_URL=https://api.z.ai/api/anthropic
 AUTH_TOKEN=sk-...
-MODEL=glm-4.6
+MODELS=glm-4.6,glm-4.5,glm-4.6-air
+DEFAULT_MODEL=glm-4.6
 SMALL_FAST_MODEL=glm-4.6
 ```
 
-The config dir and files are created with `0700` / `0600` permissions so your keys aren't world-readable.
+The config dir and files are created with `0700` / `0600` permissions so your keys aren't world-readable. Legacy single-model profiles using `MODEL=...` are still supported.
 
 ## Example providers
 
-| Provider    | `BASE_URL`                              | Example `MODEL`       |
-|-------------|-----------------------------------------|-----------------------|
-| Anthropic   | `https://api.anthropic.com`             | `claude-sonnet-4-6`   |
-| Z.ai (GLM)  | `https://api.z.ai/api/anthropic`        | `glm-4.6`             |
-| BigModel    | `https://open.bigmodel.cn/api/anthropic`| `glm-4.6`             |
+| Provider    | `BASE_URL`                              | Example models                       |
+|-------------|-----------------------------------------|--------------------------------------|
+| Anthropic   | `https://api.anthropic.com`             | `claude-sonnet-4-6,claude-opus-4-6`  |
+| Z.ai (GLM)  | `https://api.z.ai/api/anthropic`        | `glm-4.6,glm-4.5,glm-4.6-air`        |
+| BigModel    | `https://open.bigmodel.cn/api/anthropic`| `glm-4.6,glm-4.5`                    |
 
 Providers that only expose an **OpenAI-format** API (OpenRouter, SiliconFlow, most aggregators) won't work directly — you'd need a translation proxy like [`claude-code-router`](https://github.com/musistudio/claude-code-router) in front of them, and then point `claude-custom` at the proxy's Anthropic-compatible URL.
 
