@@ -16,6 +16,7 @@ set -euo pipefail
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-custom"
 PROFILE_DIR="$CONFIG_DIR/profiles"
+DEFAULT_FILE="$CONFIG_DIR/default"
 mkdir -p "$PROFILE_DIR"
 chmod 700 "$CONFIG_DIR" "$PROFILE_DIR"
 
@@ -81,8 +82,8 @@ load_profile() {
 }
 
 # Resolve which model to launch with given an already-loaded profile.
-# Argument: optional explicit model (e.g. from CLI). If empty and profile
-# has multiple models, prompts. If only one model, uses it silently.
+# If explicit model matches a profile model, use it (claude-custom model selection).
+# If it doesn't match, return empty (will be forwarded to claude as --model).
 resolve_model() {
   local explicit="${1:-}"
   local models=()
@@ -93,11 +94,14 @@ resolve_model() {
   if [[ -n "$explicit" ]]; then
     local found=""
     for m in "${models[@]}"; do [[ "$m" == "$explicit" ]] && found="$m"; done
-    if [[ -z "$found" ]]; then
-      info "note: '$explicit' not in profile model list, using it anyway"
-      found="$explicit"
+    if [[ -n "$found" ]]; then
+      SELECTED_MODEL="$found"
+      CONSUMED_MODEL=1
+      return
     fi
-    SELECTED_MODEL="$found"
+    # Not a profile model — leave for claude to handle
+    SELECTED_MODEL="$DEFAULT_MODEL"
+    CONSUMED_MODEL=0
     return
   fi
 
@@ -180,27 +184,103 @@ pick_profile_interactive() {
   fi
 }
 
+share_profile() {
+  [[ -n "${1:-}" ]] || die "usage: --share <name>"
+  load_profile "$1"
+  echo "claude-custom --import $1 BASE_URL=$BASE_URL AUTH_TOKEN=$AUTH_TOKEN MODELS=$MODELS DEFAULT_MODEL=$DEFAULT_MODEL SMALL_FAST_MODEL=$SMALL_FAST_MODEL"
+}
+
+import_profile() {
+  [[ -n "${1:-}" ]] || die "usage: --import <name> BASE_URL=... AUTH_TOKEN=... MODELS=..."
+  local name="$1"; shift
+  local base="" token="" models="" default_model="" small=""
+  for arg in "$@"; do
+    case "$arg" in
+      BASE_URL=*)         base="${arg#BASE_URL=}" ;;
+      AUTH_TOKEN=*)       token="${arg#AUTH_TOKEN=}" ;;
+      MODELS=*)           models="${arg#MODELS=}" ;;
+      DEFAULT_MODEL=*)    default_model="${arg#DEFAULT_MODEL=}" ;;
+      SMALL_FAST_MODEL=*) small="${arg#SMALL_FAST_MODEL=}" ;;
+      *) die "unknown import field: $arg" ;;
+    esac
+  done
+  [[ -n "$base" ]]   || die "BASE_URL required"
+  [[ -n "$token" ]]  || die "AUTH_TOKEN required"
+  [[ -n "$models" ]] || die "MODELS required"
+  : "${default_model:=${models%%,*}}"
+  : "${small:=$default_model}"
+  save_profile "$name" "$base" "$token" "$models" "$default_model" "$small"
+}
+
+set_default() {
+  [[ -n "${1:-}" ]] || die "usage: --set-default <name>"
+  [[ -f "$PROFILE_DIR/$1.env" ]] || die "no such profile: $1"
+  printf '%s' "$1" > "$DEFAULT_FILE"
+  chmod 600 "$DEFAULT_FILE"
+  ok "default profile set to '$1'"
+}
+
+unset_default() {
+  [[ -f "$DEFAULT_FILE" ]] || { info "no default profile set"; return 0; }
+  rm -f -- "$DEFAULT_FILE"
+  ok "default profile cleared"
+}
+
+get_default_profile() {
+  if [[ -f "$DEFAULT_FILE" ]]; then
+    local name
+    name=$(cat "$DEFAULT_FILE")
+    if [[ -f "$PROFILE_DIR/$name.env" ]]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 usage:
   claude-custom                                # interactive: pick profile + model, launch
-  claude-custom <profile> [args...]            # launch with named profile
-  claude-custom <profile> --model <m> [args]   # launch with explicit model
+  claude-custom <profile> [args...]            # launch with named profile, forward args to claude
+  claude-custom <profile> --model <m> [args]   # use model from profile's list, forward rest to claude
+
+management:
   claude-custom --list                         # list profiles
   claude-custom --new                          # create a new profile (no launch)
   claude-custom --edit <name>                  # open profile in $EDITOR
-  claude-custom --add-model <name> <model>     # append model to profile's list
-  claude-custom --rm-model <name> <model>      # remove model from profile's list
   claude-custom --delete <name>                # delete a profile
   claude-custom --show <name>                  # print a profile (token masked)
+  claude-custom --add-model <name> <model>     # append model to profile's list
+  claude-custom --rm-model <name> <model>      # remove model from profile's list
+  claude-custom --share <name>                 # output a one-liner for sharing credentials
+  claude-custom --import <name> KEY=VAL ...    # create profile non-interactively
+  claude-custom --set-default <name>           # set default profile (skip picker)
+  claude-custom --unset-default                # clear default profile
   claude-custom --help
 
-profile model list: comma-separated, picker shown at launch when >1 model.
+With no profile name, uses the default profile (set via --set-default) or
+picks interactively. Useful for quick shortcuts:
+  claude-custom -p "prompt"                    # print mode with default profile
+  claude-custom -c                             # continue conversation
+  claude-custom -r 9b5e8fa6-...                # resume session
+  claude-custom --continue                     # same as -c
+
+All Claude Code flags are forwarded after the profile name:
+  claude-custom pbd -p "prompt"                # print mode
+  claude-custom pbd -c                         # continue conversation
+  claude-custom pbd --system-prompt "..."       # custom system prompt
+  claude-custom pbd --allowedTools "Bash,Edit"  # restrict tools
+  claude-custom pbd --permission-mode auto      # permission mode
+
+If --model <m> is given and <m> is in the profile's model list, claude-custom
+selects it. Otherwise --model is forwarded to claude unchanged.
 EOF
 }
 
 main() {
   local explicit_model=""
+
   case "${1:-}" in
     --help|-h) usage; exit 0 ;;
     --list)
@@ -246,21 +326,54 @@ main() {
       local f="$PROFILE_DIR/$2.env"
       [[ -f "$f" ]] || die "no such profile"
       sed -E 's/^(AUTH_TOKEN)=.*/\1=***masked***/' "$f"; exit 0 ;;
+    --share)
+      shift; share_profile "$@"; exit 0 ;;
+    --import)
+      shift; import_profile "$@"; exit 0 ;;
+    --set-default)
+      shift; set_default "$@"; exit 0 ;;
+    --unset-default)
+      unset_default; exit 0 ;;
     "")
-      if [[ -z "$(list_profiles)" ]]; then
+      # Check for default profile first
+      if default_name=$(get_default_profile); then
+        load_profile "$default_name"
+        info "using default profile: $default_name"
+      elif [[ -z "$(list_profiles)" ]]; then
         info "no profiles yet — let's create one"
         create_profile_interactive
       else
         pick_profile_interactive
       fi
       ;;
-    -*) die "unknown flag: $1" ;;
+    -*)
+      # First arg is a flag (e.g. -p, -c, -r, --continue) but not a
+      # claude-custom management flag — load default profile or pick interactively,
+      # then forward all args to claude.
+      if default_name=$(get_default_profile); then
+        load_profile "$default_name"
+        info "using default profile: $default_name"
+      elif [[ -z "$(list_profiles)" ]]; then
+        die "no profiles. create one first with: claude-custom --new"
+      else
+        pick_profile_interactive
+      fi
+      # Don't shift — all remaining $@ are claude flags
+      ;;
     *)
       load_profile "$1"; shift
-      # parse optional --model <m> after profile name
-      if [[ "${1:-}" == "--model" ]]; then
-        [[ -n "${2:-}" ]] || die "--model requires a value"
-        explicit_model="$2"; shift 2
+      # Check if --model follows and matches a profile model
+      if [[ "${1:-}" == "--model" && -n "${2:-}" ]]; then
+        local candidate="$2"
+        local models_list=""
+        while IFS= read -r m; do
+          models_list="${models_list}${models_list:+,}$m"
+        done < <(split_models "$MODELS")
+        case ",$models_list," in
+          *",$candidate,"*)
+            explicit_model="$candidate"; shift 2 ;;
+        esac
+        # If not in profile model list, leave --model for claude
       fi
       ;;
   esac

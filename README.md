@@ -69,12 +69,43 @@ choice [default: glm-4.6]: 2
 → https://api.z.ai/api/anthropic  model=glm-4.5
 ```
 
-### Non-interactive — pass profile (and optionally model) directly
+### Non-interactive — pass profile and forward Claude Code flags
+
+All flags after the profile name are forwarded to `claude`:
 
 ```sh
-claude-custom zai                          # uses default model (or prompts if >1 + no choice)
-claude-custom zai --model glm-4.5          # explicit model from the profile's list
-claude-custom zai --model glm-4.5 "go"     # extra args forwarded to claude
+claude-custom zai                                    # uses default model (or prompts if >1)
+claude-custom zai --model glm-4.5                    # model from the profile's list
+claude-custom zai -p "what is 1+1"                   # print mode (forwarded to claude)
+claude-custom zai -c                                 # continue conversation
+claude-custom zai --system-prompt "you are helpful"  # custom system prompt
+claude-custom zai --allowedTools "Bash,Edit"         # restrict tools
+claude-custom zai --permission-mode auto             # permission mode
+claude-custom zai --model gpt-5.4 "fix the bug"      # model NOT in profile → forwarded to claude
+```
+
+**Note on `--model`:** If the model name matches one in the profile's model list, claude-custom selects it. If it doesn't match, `--model` is forwarded to claude unchanged — useful for providers that support models not in your saved list.
+
+### Shortcuts with default profile
+
+When you've set a default profile (`--set-default`), you can skip the profile name entirely:
+
+```sh
+claude-custom -p "what is 1+1"            # print mode with default profile
+claude-custom -c                          # continue last conversation
+claude-custom -r 9b5e8fa6-...             # resume a specific session
+claude-custom --continue                  # same as -c
+claude-custom --model glm-4.5             # pick model from default profile
+```
+
+### Set a default profile
+
+Skip the picker entirely by setting a default:
+
+```sh
+claude-custom --set-default zai
+claude-custom        # launches zai directly, no picker
+claude-custom --unset-default   # go back to interactive picker
 ```
 
 ### Manage profiles
@@ -87,6 +118,30 @@ claude-custom --delete zai    # delete a profile
 claude-custom --help
 ```
 
+## Sharing profiles
+
+### Share a profile with someone
+
+```sh
+$ claude-custom --share palebluedot
+claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,... DEFAULT_MODEL=z-ai/glm-5 SMALL_FAST_MODEL=z-ai/glm-5
+```
+
+Send that one-liner to your teammate. They paste it into their terminal and the profile is created instantly.
+
+### Import a shared profile
+
+```sh
+claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,... DEFAULT_MODEL=z-ai/glm-5 SMALL_FAST_MODEL=z-ai/glm-5
+saved profile → ~/.config/claude-custom/profiles/palebluedot.env
+```
+
+Or pipe it directly:
+
+```sh
+claude-custom --share palebluedot | bash
+```
+
 ## Profile storage
 
 Profiles are plain shell-sourceable files at:
@@ -94,6 +149,11 @@ Profiles are plain shell-sourceable files at:
 ```
 $XDG_CONFIG_HOME/claude-custom/profiles/<name>.env
 # defaults to ~/.config/claude-custom/profiles/
+```
+
+Default profile is stored at:
+```
+$XDG_CONFIG_HOME/claude-custom/default
 ```
 
 Example `zai.env`:
