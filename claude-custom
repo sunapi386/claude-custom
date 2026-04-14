@@ -188,6 +188,9 @@ usage:
   claude-custom <profile> --model <m> [args]   # launch with explicit model
   claude-custom --list                         # list profiles
   claude-custom --new                          # create a new profile (no launch)
+  claude-custom --edit <name>                  # open profile in $EDITOR
+  claude-custom --add-model <name> <model>     # append model to profile's list
+  claude-custom --rm-model <name> <model>      # remove model from profile's list
   claude-custom --delete <name>                # delete a profile
   claude-custom --show <name>                  # print a profile (token masked)
   claude-custom --help
@@ -207,6 +210,37 @@ main() {
     --delete)
       [[ -n "${2:-}" ]] || die "name required"
       rm -f -- "$PROFILE_DIR/$2.env" && ok "deleted $2"; exit 0 ;;
+    --edit)
+      [[ -n "${2:-}" ]] || die "name required"
+      local f="$PROFILE_DIR/$2.env"
+      [[ -f "$f" ]] || die "no such profile: $2"
+      "${EDITOR:-vi}" "$f"; exit 0 ;;
+    --add-model)
+      [[ -n "${2:-}" && -n "${3:-}" ]] || die "usage: --add-model <name> <model>"
+      load_profile "$2"
+      local cur="$MODELS" new="$3"
+      case ",$cur," in
+        *",$new,"*) info "model '$new' already in profile '$2'"; exit 0 ;;
+      esac
+      cur="${cur:+$cur,}$new"
+      save_profile "$2" "$BASE_URL" "$AUTH_TOKEN" "$cur" "$DEFAULT_MODEL" "$SMALL_FAST_MODEL"
+      exit 0 ;;
+    --rm-model)
+      [[ -n "${2:-}" && -n "${3:-}" ]] || die "usage: --rm-model <name> <model>"
+      load_profile "$2"
+      local rm_target="$3"
+      local kept=""
+      while IFS= read -r m; do
+        [[ "$m" == "$rm_target" ]] && continue
+        kept="${kept:+$kept,}$m"
+      done < <(split_models "$MODELS")
+      [[ -z "$kept" ]] && die "refusing to remove the only model"
+      local new_default="$DEFAULT_MODEL"
+      [[ "$DEFAULT_MODEL" == "$rm_target" ]] && new_default="${kept%%,*}"
+      local new_small="$SMALL_FAST_MODEL"
+      [[ "$SMALL_FAST_MODEL" == "$rm_target" ]] && new_small="$new_default"
+      save_profile "$2" "$BASE_URL" "$AUTH_TOKEN" "$kept" "$new_default" "$new_small"
+      exit 0 ;;
     --show)
       [[ -n "${2:-}" ]] || die "name required"
       local f="$PROFILE_DIR/$2.env"
