@@ -79,8 +79,7 @@ echo
 # Step 1: Clone the repo
 echo "Cloning repository..."
 CLONE_DIR=$(mktemp -d)
-run git clone --bare "git@github.com:sunapi386/claude-custom.git" "$CLONE_DIR" 2>/dev/null || \
-  run git clone "https://github.com/sunapi386/claude-custom.git" "$CLONE_DIR"
+run git clone "https://github.com/sunapi386/claude-custom.git" "$CLONE_DIR"
 cd "$CLONE_DIR"
 
 # Step 2: Fetch all
@@ -99,21 +98,33 @@ fi
 
 # Step 4: Update VERSION
 echo "Updating VERSION to $VERSION..."
-run sed -i "s/^VERSION=\".*\"/VERSION=\"$VERSION\"/" claude-custom
+if grep -q "^VERSION=\"$VERSION\"" claude-custom 2>/dev/null; then
+  echo "Version is already $VERSION, skipping version bump"
+else
+  run sed -i "s/^VERSION=\".*\"/VERSION=\"$VERSION\"/" claude-custom
 
-# Step 5: Commit the version bump
-echo "Committing version bump..."
-run git add claude-custom
-run git commit -m "Bump version to $TAG"
+  # Step 5: Commit the version bump
+  echo "Committing version bump..."
+  run git add claude-custom
+  if git diff --cached --quiet; then
+    echo "No changes to commit"
+  else
+    run git commit -m "Bump version to $TAG"
+  fi
+fi
 
 # Step 6: Tag
 echo "Tagging $TAG..."
-run git tag -a "$TAG" -m "Release $TAG"
+if git rev-parse --verify "$TAG" &>/dev/null; then
+  echo "Tag $TAG already exists"
+else
+  run git tag -a "$TAG" -m "Release $TAG"
+fi
 
 # Step 7: Push
 echo "Pushing to GitHub..."
-run git push "$PROD_BRANCH"
-run git push "$TAG"
+run git push origin "$PROD_BRANCH"
+run git push origin "$TAG"
 
 # Step 8: Create GitHub release with artifact
 echo "Creating GitHub release..."
