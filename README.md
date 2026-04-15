@@ -20,7 +20,7 @@ ANTHROPIC_SMALL_FAST_MODEL
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sunapi386/claude-custom/main/claude-custom \
+curl -fsSL https://raw.githubusercontent.com/sunapi386/claude-custom/production/claude-custom \
   -o ~/.local/bin/claude-custom
 chmod +x ~/.local/bin/claude-custom
 ```
@@ -115,8 +115,21 @@ claude-custom --list          # list profile names
 claude-custom --new           # create a new profile, don't launch
 claude-custom --show zai      # print profile (api key masked)
 claude-custom --delete zai    # delete a profile
+claude-custom --add-model zai "glm-4.7"   # add a model to a profile
+claude-custom --rm-model zai "glm-4.5"    # remove a model from a profile
+claude-custom --edit zai      # edit profile in $EDITOR
 claude-custom --help
 ```
+
+### Version and updates
+
+```sh
+claude-custom --version          # show current version
+claude-custom --check-update     # check if a new version is available
+claude-custom --self-update      # update to the latest version
+```
+
+Updates are fetched from the `production` branch on GitHub.
 
 ## Sharing profiles
 
@@ -124,7 +137,14 @@ claude-custom --help
 
 ```sh
 $ claude-custom --share palebluedot
-claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,... DEFAULT_MODEL=z-ai/glm-5 SMALL_FAST_MODEL=z-ai/glm-5
+claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,...
+```
+
+For tokens with special characters that may break shell parsing, use base64 encoding:
+
+```sh
+$ claude-custom --share-b64 palebluedot
+claude-custom --import-b64 palebluedot BASE_URL=... AUTH_TOKEN=... MODELS=...
 ```
 
 Send that one-liner to your teammate. They paste it into their terminal and the profile is created instantly.
@@ -132,8 +152,12 @@ Send that one-liner to your teammate. They paste it into their terminal and the 
 ### Import a shared profile
 
 ```sh
-claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,... DEFAULT_MODEL=z-ai/glm-5 SMALL_FAST_MODEL=z-ai/glm-5
+# Standard import (may break with special characters in tokens)
+claude-custom --import palebluedot BASE_URL=https://open.palebluedot.ai AUTH_TOKEN=sk-6AV... MODELS=z-ai/glm-5,...
 saved profile → ~/.config/claude-custom/profiles/palebluedot.env
+
+# Base64-encoded import (safe for any token)
+claude-custom --import-b64 palebluedot BASE_URL=YXNkZmFzZGZh... AUTH_TOKEN=c2stNjEyMzQ1Ng== MODELS=ei1haS9nbG0tNSw...
 ```
 
 Or pipe it directly:

@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+VERSION="0.1.0"
+REPO="sunapi386/claude-custom"
+GITHUB_API="https://api.github.com"
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-custom"
 PROFILE_DIR="$CONFIG_DIR/profiles"
 DEFAULT_FILE="$CONFIG_DIR/default"
@@ -190,6 +194,12 @@ share_profile() {
   echo "claude-custom --import $1 BASE_URL=$BASE_URL AUTH_TOKEN=$AUTH_TOKEN MODELS=$MODELS DEFAULT_MODEL=$DEFAULT_MODEL SMALL_FAST_MODEL=$SMALL_FAST_MODEL"
 }
 
+share_profile_b64() {
+  [[ -n "${1:-}" ]] || die "usage: --share-b64 <name>"
+  load_profile "$1"
+  echo "claude-custom --import-b64 $1 BASE_URL=$(printf '%s' "$BASE_URL" | base64) AUTH_TOKEN=$(printf '%s' "$AUTH_TOKEN" | base64) MODELS=$(printf '%s' "$MODELS" | base64) DEFAULT_MODEL=$(printf '%s' "$DEFAULT_MODEL" | base64) SMALL_FAST_MODEL=$(printf '%s' "$SMALL_FAST_MODEL" | base64)"
+}
+
 import_profile() {
   [[ -n "${1:-}" ]] || die "usage: --import <name> BASE_URL=... AUTH_TOKEN=... MODELS=..."
   local name="$1"; shift
@@ -201,6 +211,28 @@ import_profile() {
       MODELS=*)           models="${arg#MODELS=}" ;;
       DEFAULT_MODEL=*)    default_model="${arg#DEFAULT_MODEL=}" ;;
       SMALL_FAST_MODEL=*) small="${arg#SMALL_FAST_MODEL=}" ;;
+      *) die "unknown import field: $arg" ;;
+    esac
+  done
+  [[ -n "$base" ]]   || die "BASE_URL required"
+  [[ -n "$token" ]]  || die "AUTH_TOKEN required"
+  [[ -n "$models" ]] || die "MODELS required"
+  : "${default_model:=${models%%,*}}"
+  : "${small:=$default_model}"
+  save_profile "$name" "$base" "$token" "$models" "$default_model" "$small"
+}
+
+import_profile_b64() {
+  [[ -n "${1:-}" ]] || die "usage: --import-b64 <name> BASE_URL=... AUTH_TOKEN=... MODELS=..."
+  local name="$1"; shift
+  local base="" token="" models="" default_model="" small=""
+  for arg in "$@"; do
+    case "$arg" in
+      BASE_URL=*)         base="$(echo "${arg#BASE_URL=}" | base64 -d)" ;;
+      AUTH_TOKEN=*)       token="$(echo "${arg#AUTH_TOKEN=}" | base64 -d)" ;;
+      MODELS=*)           models="$(echo "${arg#MODELS=}" | base64 -d)" ;;
+      DEFAULT_MODEL=*)    default_model="$(echo "${arg#DEFAULT_MODEL=}" | base64 -d)" ;;
+      SMALL_FAST_MODEL=*) small="$(echo "${arg#SMALL_FAST_MODEL=}" | base64 -d)" ;;
       *) die "unknown import field: $arg" ;;
     esac
   done
@@ -238,6 +270,51 @@ get_default_profile() {
   return 1
 }
 
+check_version() {
+  local latest
+  latest=$(curl -sL --fail "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p')
+  if [[ -z "$latest" ]]; then
+    info "no releases found or could not fetch latest version"
+    return 1
+  fi
+  if [[ "$latest" == "v${VERSION}" ]] || [[ "$latest" == "$VERSION" ]]; then
+    ok "you have the latest version: $VERSION"
+    return 1
+  else
+    info "new version available: $latest (current: $VERSION)"
+    printf '  run: claude-custom --self-update\n'
+    return 0
+  fi
+}
+
+self_update() {
+  local tmp script
+  tmp=$(mktemp)
+  script="$(mktemp)"
+  chmod +x "$script"
+
+  info "downloading latest version from production branch..."
+  if ! curl -sL "https://raw.githubusercontent.com/$REPO/production/claude-custom" > "$script"; then
+    rm -f "$tmp" "$script"
+    die "failed to download latest version"
+  fi
+
+  if ! grep -q "^VERSION=" "$script"; then
+    rm -f "$tmp" "$script"
+    die "downloaded file does not appear to be a valid claude-custom script"
+  fi
+
+  local new_version
+  new_version=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$script")
+
+  mv "$script" "$0"
+  ok "updated to version $new_version"
+}
+
+show_version() {
+  printf 'claude-custom version %s\n' "$VERSION"
+}
+
 usage() {
   cat <<'EOF'
 usage:
@@ -254,9 +331,14 @@ management:
   claude-custom --add-model <name> <model>     # append model to profile's list
   claude-custom --rm-model <name> <model>      # remove model from profile's list
   claude-custom --share <name>                 # output a one-liner for sharing credentials
+  claude-custom --share-b64 <name>            # output a one-liner with base64-encoded values
   claude-custom --import <name> KEY=VAL ...    # create profile non-interactively
+  claude-custom --import-b64 <name> KEY=VAL ... # same, but values are base64-encoded
   claude-custom --set-default <name>           # set default profile (skip picker)
   claude-custom --unset-default                # clear default profile
+  claude-custom --version                      # show version
+  claude-custom --check-update                # check for updates
+  claude-custom --self-update                 # update to latest version
   claude-custom --help
 
 With no profile name, uses the default profile (set via --set-default) or
@@ -283,6 +365,9 @@ main() {
 
   case "${1:-}" in
     --help|-h) usage; exit 0 ;;
+    --version) show_version; exit 0 ;;
+    --check-update) check_version; exit 0 ;;
+    --self-update) self_update; exit 0 ;;
     --list)
       list_profiles | sed 's/^/  /'; exit 0 ;;
     --new)
@@ -328,6 +413,10 @@ main() {
       sed -E 's/^(AUTH_TOKEN)=.*/\1=***masked***/' "$f"; exit 0 ;;
     --share)
       shift; share_profile "$@"; exit 0 ;;
+    --share-b64)
+      shift; share_profile_b64 "$@"; exit 0 ;;
+    --import-b64)
+      shift; import_profile_b64 "$@"; exit 0 ;;
     --import)
       shift; import_profile "$@"; exit 0 ;;
     --set-default)
