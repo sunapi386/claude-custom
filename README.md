@@ -197,8 +197,37 @@ The config dir and files are created with `0700` / `0600` permissions so your ke
 | Provider    | `BASE_URL`                              | Example models                       |
 |-------------|-----------------------------------------|--------------------------------------|
 | Anthropic   | `https://api.anthropic.com`             | `claude-sonnet-4-6,claude-opus-4-6`  |
+| AceTeam     | `https://api.aceteam.ai`                | `claude-sonnet-4-5,claude-opus-4-5-20251101` |
 | Z.ai (GLM)  | `https://api.z.ai/api/anthropic`        | `glm-4.6,glm-4.5,glm-4.6-air`        |
 | BigModel    | `https://open.bigmodel.cn/api/anthropic`| `glm-4.6,glm-4.5`                    |
+
+### AceTeam
+
+[AceTeam](https://aceteam.ai) exposes an Anthropic-compatible Messages endpoint on its AEP gateway, so Claude Code runs against it directly -- with the platform's safety pipeline (PII/threat/cost-anomaly detectors), per-org policy enforcement, and usage metering applied to every call.
+
+1. Sign in at [aceteam.ai](https://aceteam.ai) and create an API key (Console -> API keys, or the `create_api_key` MCP tool). Keys look like `act_<64 hex>`.
+2. Create the profile:
+
+```sh
+claude-custom --import aceteam \
+  BASE_URL=https://api.aceteam.ai \
+  AUTH_TOKEN=act_your_key_here \
+  MODELS=claude-sonnet-4-5,claude-opus-4-5-20251101,claude-haiku-4-5-20251001 \
+  DEFAULT_MODEL=claude-sonnet-4-5 \
+  SMALL_FAST_MODEL=claude-sonnet-4-5
+```
+
+3. Launch:
+
+```sh
+claude-custom aceteam                          # picker for the model list
+claude-custom aceteam --model claude-sonnet-4-5 -p "explain this repo"
+```
+
+Notes:
+- The gateway serves `POST /v1/messages` (Anthropic wire format, streaming SSE included) at the bare host; `https://api.aceteam.ai/api/gateway` works identically as a base URL.
+- `GET /v1/models` lists everything the gateway can route -- Claude models are served natively (lossless Anthropic passthrough), and the same key also works for OpenAI-format models via `/v1/chat/completions`.
+- The token is accepted as either `Authorization: Bearer` (what Claude Code sends) or `x-api-key` (Anthropic SDK default).
 
 Providers that only expose an **OpenAI-format** API (OpenRouter, SiliconFlow, most aggregators) won't work directly — you'd need a translation proxy like [`claude-code-router`](https://github.com/musistudio/claude-code-router) in front of them, and then point `claude-custom` at the proxy's Anthropic-compatible URL.
 
